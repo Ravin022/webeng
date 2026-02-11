@@ -1,0 +1,356 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>WebEng — Game Value Modifier Engine</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: 'Segoe UI', -apple-system, sans-serif;
+      background: #0a0a14;
+      color: #e0e0e0;
+      min-height: 100vh;
+      padding: 40px 20px;
+    }
+
+    .container {
+      max-width: 800px;
+      margin: 0 auto;
+    }
+
+    h1 {
+      font-size: 36px;
+      color: #00d4ff;
+      margin-bottom: 8px;
+      letter-spacing: 2px;
+    }
+
+    h1 span {
+      color: #555;
+      font-weight: 300;
+    }
+
+    .subtitle {
+      color: #888;
+      font-size: 16px;
+      margin-bottom: 40px;
+    }
+
+    h2 {
+      font-size: 20px;
+      color: #00d4ff;
+      margin: 32px 0 12px;
+      border-bottom: 1px solid #1a1a2e;
+      padding-bottom: 8px;
+    }
+
+    h3 {
+      font-size: 16px;
+      color: #ccc;
+      margin: 20px 0 8px;
+    }
+
+    p, li {
+      color: #aaa;
+      line-height: 1.7;
+      font-size: 14px;
+    }
+
+    ul {
+      margin-left: 20px;
+      margin-bottom: 12px;
+    }
+
+    li { margin-bottom: 4px; }
+
+    code {
+      background: #1a1a2e;
+      padding: 2px 6px;
+      border-radius: 3px;
+      font-family: 'Consolas', 'Monaco', monospace;
+      font-size: 13px;
+      color: #00d4ff;
+    }
+
+    pre {
+      background: #0f0f1a;
+      border: 1px solid #2a2a3c;
+      border-radius: 8px;
+      padding: 16px;
+      overflow-x: auto;
+      margin: 12px 0;
+      font-family: 'Consolas', 'Monaco', monospace;
+      font-size: 13px;
+      color: #ccc;
+      line-height: 1.5;
+    }
+
+    .card {
+      background: #0f0f1a;
+      border: 1px solid #2a2a3c;
+      border-radius: 8px;
+      padding: 20px;
+      margin: 16px 0;
+    }
+
+    .card-title {
+      font-size: 16px;
+      font-weight: 600;
+      color: #00d4ff;
+      margin-bottom: 8px;
+    }
+
+    .btn {
+      display: inline-block;
+      background: linear-gradient(135deg, #0066cc, #0044aa);
+      color: #fff;
+      border: none;
+      border-radius: 6px;
+      padding: 10px 24px;
+      font-size: 14px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.2s;
+      text-decoration: none;
+      margin: 4px;
+    }
+
+    .btn:hover {
+      background: linear-gradient(135deg, #0077ee, #0055cc);
+      transform: translateY(-1px);
+    }
+
+    .btn.secondary {
+      background: rgba(255, 255, 255, 0.08);
+    }
+
+    .btn.secondary:hover {
+      background: rgba(255, 255, 255, 0.15);
+    }
+
+    #bookmarklet-area {
+      margin: 16px 0;
+    }
+
+    #bookmarklet-link {
+      display: inline-block;
+      background: linear-gradient(135deg, #22aa44, #118833);
+      color: #fff;
+      padding: 10px 24px;
+      border-radius: 6px;
+      font-weight: 600;
+      text-decoration: none;
+      cursor: grab;
+      font-size: 14px;
+    }
+
+    #bookmarklet-link:hover {
+      background: linear-gradient(135deg, #33bb55, #229944);
+    }
+
+    .copy-btn {
+      background: rgba(255, 255, 255, 0.08);
+      border: 1px solid #3a3a5c;
+      color: #ccc;
+      padding: 6px 16px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 12px;
+      transition: all 0.2s;
+    }
+
+    .copy-btn:hover {
+      background: rgba(255, 255, 255, 0.15);
+    }
+
+    .features-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+      margin: 16px 0;
+    }
+
+    @media (max-width: 600px) {
+      .features-grid { grid-template-columns: 1fr; }
+    }
+
+    .feature {
+      background: #0f0f1a;
+      border: 1px solid #2a2a3c;
+      border-radius: 8px;
+      padding: 16px;
+    }
+
+    .feature-title {
+      font-weight: 600;
+      color: #00d4ff;
+      margin-bottom: 6px;
+    }
+
+    .feature p {
+      font-size: 13px;
+      color: #888;
+    }
+
+    .kbd {
+      display: inline-block;
+      padding: 2px 6px;
+      background: #1a1a2e;
+      border: 1px solid #3a3a5c;
+      border-radius: 3px;
+      font-family: monospace;
+      font-size: 12px;
+      color: #ccc;
+    }
+
+    footer {
+      margin-top: 60px;
+      padding-top: 20px;
+      border-top: 1px solid #1a1a2e;
+      text-align: center;
+      color: #555;
+      font-size: 12px;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>WEBENG <span>v1.0</span></h1>
+    <p class="subtitle">Browser Game Value Modifier Engine</p>
+
+    <!-- Features -->
+    <div class="features-grid">
+      <div class="feature">
+        <div class="feature-title">Value Scanner</div>
+        <p>Cheat Engine-style first scan / next scan workflow to find and narrow down in-game values like money, health, and items.</p>
+      </div>
+      <div class="feature">
+        <div class="feature-title">Value Modifier</div>
+        <p>Change any discovered value instantly. Freeze values so they persist even when the game tries to update them.</p>
+      </div>
+      <div class="feature">
+        <div class="feature-title">Network Interceptor</div>
+        <p>Intercept and modify XHR, Fetch, and WebSocket traffic with regex-based rules. Change server responses on the fly.</p>
+      </div>
+      <div class="feature">
+        <div class="feature-title">Anti-Tamper Bypass</div>
+        <p>Bypass Object.freeze, read-only properties, and integrity-check timers. Stay hidden from detection scripts.</p>
+      </div>
+    </div>
+
+    <!-- Quick Start -->
+    <h2>Quick Start</h2>
+
+    <h3>Method 1: Console Paste (Recommended)</h3>
+    <div class="card">
+      <ol>
+        <li>Open the game in your browser</li>
+        <li>Open DevTools (<span class="kbd">F12</span> or <span class="kbd">Ctrl+Shift+I</span>)</li>
+        <li>Go to the <strong>Console</strong> tab</li>
+        <li>Copy the contents of <code>dist/webeng.js</code> and paste into the console</li>
+        <li>Press <span class="kbd">Enter</span> — the WebEng panel appears!</li>
+      </ol>
+      <br>
+      <button class="copy-btn" id="copy-script-btn">Copy Script to Clipboard</button>
+    </div>
+
+    <h3>Method 2: Bookmarklet</h3>
+    <div class="card">
+      <p>Drag this link to your bookmarks bar, then click it on any game page:</p>
+      <div id="bookmarklet-area" style="margin-top:12px;">
+        <a id="bookmarklet-link" href="javascript:void(0)" title="Drag to bookmarks bar">WebEng Inject</a>
+      </div>
+      <p style="margin-top:8px;font-size:12px;color:#666;">
+        Note: The bookmarklet loads the script from a local server. Run <code>python3 -m http.server 8080</code>
+        in the project directory first.
+      </p>
+    </div>
+
+    <!-- Usage Guide -->
+    <h2>How to Use</h2>
+
+    <h3>Scanning for Values</h3>
+    <pre>1. Note the current value in the game (e.g., gold = 500)
+2. Enter "500" in the Scanner tab and click "First Scan"
+3. Do something in the game to change the value (e.g., spend gold)
+4. Enter the new value and click "Next Scan"
+5. Repeat until only a few results remain
+6. Click "Edit" to change the value, or "Freeze" to lock it</pre>
+
+    <h3>Network Interception</h3>
+    <pre>1. Go to the Network tab and watch requests flow in
+2. Click "Rules" sub-tab, then "+ New Rule"
+3. Set a URL pattern to match the game's API endpoints
+4. Define find/replace patterns for response bodies
+   Example: Find: "gold":100  Replace: "gold":999999
+5. The rule automatically modifies matching responses</pre>
+
+    <h3>Console API</h3>
+    <pre>// Scan for a value
+__WEBENG__.scan(500)
+
+// Narrow results after the value changes
+__WEBENG__.nextScan(450)
+
+// Set a value directly (if you know the path)
+__WEBENG__.set('window.game.player.gold', 999999)
+
+// Freeze a value (re-applied every 50ms)
+__WEBENG__.freeze('window.game.player.health', 100)
+
+// Add a network modification rule
+__WEBENG__.addRule({
+  name: 'Infinite Gold',
+  urlPattern: '.*api/save.*',
+  target: 'response',
+  find: '"gold":\\d+',
+  replace: '"gold":999999'
+})
+
+// Create a writable proxy for a frozen config object
+window.game.config = __WEBENG__.unfreezeObj(window.game.config)</pre>
+
+    <h3>Keyboard Shortcut</h3>
+    <p>Press <span class="kbd">Ctrl</span> + <span class="kbd">Shift</span> + <span class="kbd">G</span> to toggle the WebEng panel visibility.</p>
+
+    <!-- Build -->
+    <h2>Building</h2>
+    <pre>bash tools/build.sh</pre>
+    <p>This concatenates all source files into <code>dist/webeng.js</code> — a single file ready for injection.</p>
+
+    <footer>
+      WebEng — For educational and personal use only.
+    </footer>
+  </div>
+
+  <script>
+    // Generate bookmarklet
+    (function() {
+      var bookmarkletCode = "javascript:void((function(){var s=document.createElement('script');s.src='http://localhost:8080/dist/webeng.js';document.body.appendChild(s);})())";
+      var link = document.getElementById('bookmarklet-link');
+      if (link) {
+        link.href = bookmarkletCode;
+      }
+    })();
+
+    // Copy script button
+    document.getElementById('copy-script-btn').addEventListener('click', function() {
+      fetch('dist/webeng.js')
+        .then(function(r) { return r.text(); })
+        .then(function(text) {
+          navigator.clipboard.writeText(text).then(function() {
+            document.getElementById('copy-script-btn').textContent = 'Copied!';
+            setTimeout(function() {
+              document.getElementById('copy-script-btn').textContent = 'Copy Script to Clipboard';
+            }, 2000);
+          });
+        })
+        .catch(function() {
+          alert('Could not load dist/webeng.js. Run "bash tools/build.sh" first.');
+        });
+    });
+  </script>
+</body>
+</html>
