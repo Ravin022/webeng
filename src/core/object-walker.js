@@ -78,9 +78,11 @@
         return;
       }
 
-      // Skip DOM nodes
+      // Skip DOM nodes (cross-frame safe: instanceof fails across contexts)
       try {
         if (root instanceof Node) return;
+        if (root.nodeType !== undefined && root.nodeName !== undefined &&
+            typeof root.appendChild === 'function') return;
       } catch (e) { /* ignore */ }
 
       var keys;
@@ -96,23 +98,22 @@
         var key = keys[i];
         if (this.skipKeys.has(key)) continue;
 
-        // Skip numeric-looking keys on non-array objects to avoid indexed DOM collections
+        // Skip numeric keys only on known DOM collections (not plain game objects)
         if (/^\d+$/.test(key) && !Array.isArray(root) && !ArrayBuffer.isView(root)) {
-          continue;
+          try {
+            if (root instanceof HTMLCollection || root instanceof NodeList ||
+                root instanceof DOMTokenList || root instanceof NamedNodeMap ||
+                root instanceof CSSRuleList || root instanceof StyleSheetList) {
+              continue;
+            }
+          } catch (e) { /* not a DOM collection — allow the key */ }
         }
 
         var fullPath = path + '.' + key;
         var value;
 
         try {
-          // Check for getters that might have side effects
-          var desc = Object.getOwnPropertyDescriptor(root, key);
-          if (desc && desc.get && !desc.set) {
-            // Read-only getter — might be expensive or side-effectful, skip deep objects
-            value = root[key];
-          } else {
-            value = root[key];
-          }
+          value = root[key];
         } catch (e) {
           continue;
         }
@@ -155,8 +156,11 @@
         return;
       }
 
+      // Skip DOM nodes (cross-frame safe)
       try {
         if (root instanceof Node) return;
+        if (root.nodeType !== undefined && root.nodeName !== undefined &&
+            typeof root.appendChild === 'function') return;
       } catch (e) { /* ignore */ }
 
       var keys;
@@ -172,8 +176,15 @@
         var key = keys[i];
         if (this.skipKeys.has(key)) continue;
 
+        // Skip numeric keys only on known DOM collections
         if (/^\d+$/.test(key) && !Array.isArray(root) && !ArrayBuffer.isView(root)) {
-          continue;
+          try {
+            if (root instanceof HTMLCollection || root instanceof NodeList ||
+                root instanceof DOMTokenList || root instanceof NamedNodeMap ||
+                root instanceof CSSRuleList || root instanceof StyleSheetList) {
+              continue;
+            }
+          } catch (e) { /* not a DOM collection — allow the key */ }
         }
 
         var fullPath = path + '.' + key;

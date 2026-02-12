@@ -26,14 +26,20 @@
 
   // ===== 3. Bypass Mechanisms (must install early) =====
   var antiTamper = new WebEng.AntiTamper(eventBus);
-  // Auto-enable bypasses by default so they catch future game code
   antiTamper.enableAll();
   logger.info('Anti-tamper bypasses enabled.');
 
   // ===== 4. Core Engine =====
-  var objectWalker = new WebEng.ObjectWalker({ maxDepth: 7 });
+  var objectWalker = new WebEng.ObjectWalker({ maxDepth: 10 });
   var pathResolver = WebEng.PathResolver;
-  var scanner = new WebEng.Scanner(objectWalker, pathResolver, eventBus);
+  var iframeScanner = new WebEng.IframeScanner(eventBus);
+  var wasmScanner = new WebEng.WasmScanner(eventBus);
+
+  var scanner = new WebEng.Scanner(objectWalker, pathResolver, eventBus, {
+    iframeScanner: iframeScanner,
+    wasmScanner: wasmScanner
+  });
+
   var modifier = new WebEng.Modifier(pathResolver, eventBus);
 
   // ===== 5. Network Hooks =====
@@ -85,7 +91,6 @@
   });
 
   eventBus.on('request:logged', function () {
-    // Update status briefly
     overlay.setStatus('Request intercepted');
   });
 
@@ -103,6 +108,8 @@
     antiTamper: antiTamper,
     objectWalker: objectWalker,
     pathResolver: pathResolver,
+    iframeScanner: iframeScanner,
+    wasmScanner: wasmScanner,
     logger: logger,
 
     // Convenience API for console usage
@@ -126,11 +133,55 @@
     },
     unfreezeObj: function (obj) {
       return antiTamper.unfreezeObject(obj);
+    },
+    wasmScan: function (value, type) {
+      wasmScanner.detectModules(iframeScanner);
+      return wasmScanner.firstScan(Number(value), type || 'i32', 0.01, 0);
+    },
+    detectEngine: function () {
+      iframeScanner.detectIframes();
+      return WebEng.EngineDetector.detectAll(iframeScanner);
     }
   };
 
-  // Also store hookManager on namespace for settings panel
   WebEng._hookManager = hookManager;
+
+  // ===== 9. Auto-detect on load (delayed to let game initialize) =====
+  setTimeout(function () {
+    try {
+      iframeScanner.detectIframes();
+      var iframeInfo = iframeScanner.getIframeInfo();
+
+      var engines = WebEng.EngineDetector.detectAll(iframeScanner);
+      wasmScanner.detectModules(iframeScanner);
+
+      var statusParts = [];
+
+      if (iframeInfo.length > 0) {
+        var accessible = iframeInfo.filter(function (f) { return f.accessible; }).length;
+        statusParts.push(iframeInfo.length + ' iframe(s), ' + accessible + ' accessible');
+        logger.info('Iframes:', iframeInfo.length, 'total,', accessible, 'accessible');
+      }
+
+      if (engines.length > 0) {
+        var names = engines.map(function (e) { return e.name; });
+        statusParts.push('Engine: ' + names.join(', '));
+        logger.info('Detected engines:', names.join(', '));
+      }
+
+      if (wasmScanner._modules.length > 0) {
+        var heapMB = (wasmScanner._modules[0].heapBuffer.byteLength / 1048576).toFixed(1);
+        statusParts.push('WASM: ' + wasmScanner._modules.length + ' module(s), ' + heapMB + 'MB');
+        logger.info('WASM modules:', wasmScanner._modules.length);
+      }
+
+      if (statusParts.length > 0) {
+        eventBus.emit('status:update', statusParts.join(' | '));
+      }
+    } catch (e) {
+      logger.warn('Auto-detection failed:', e.message);
+    }
+  }, 2000);
 
   logger.info('WebEng loaded successfully. Press Ctrl+Shift+G to toggle UI.');
   console.log(
@@ -139,7 +190,7 @@
     'background:#1a1a2e;color:#00d4ff;padding:4px 8px;border-radius:0 4px 4px 0;'
   );
   console.log(
-    '%cAPI: __WEBENG__.scan(value) | __WEBENG__.set(path, value) | __WEBENG__.freeze(path, value)',
+    '%cAPI: __WEBENG__.scan(value) | __WEBENG__.set(path, value) | __WEBENG__.freeze(path, value) | __WEBENG__.detectEngine()',
     'color:#888;font-size:11px;'
   );
 })();

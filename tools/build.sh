@@ -46,6 +46,9 @@ cat \
   "$SRC/utils/type-detector.js" \
   "$SRC/core/object-walker.js" \
   "$SRC/core/path-resolver.js" \
+  "$SRC/core/iframe-scanner.js" \
+  "$SRC/core/wasm-scanner.js" \
+  "$SRC/core/engine-detector.js" \
   "$SRC/core/scanner.js" \
   "$SRC/core/modifier.js" \
   "$SRC/hooks/hook-manager.js" \

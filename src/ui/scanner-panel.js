@@ -1,5 +1,6 @@
 /**
  * WebEng ScannerPanel — UI for first scan / next scan workflow
+ * Includes iframe, WASM, tolerance, and engine detection controls.
  */
 (function () {
   'use strict';
@@ -85,6 +86,76 @@
       row2.appendChild(this.nextScanBtn);
       row2.appendChild(this.resetBtn);
 
+      // Scan scope row (iframe + WASM + tolerance)
+      var row3 = document.createElement('div');
+      row3.className = 'webeng-row';
+      row3.style.cssText = 'flex-wrap:wrap;gap:6px;';
+
+      // Iframe checkbox
+      this.iframeCheckbox = document.createElement('input');
+      this.iframeCheckbox.type = 'checkbox';
+      this.iframeCheckbox.checked = true;
+      this.iframeCheckbox.id = 'webeng-scan-iframes';
+      this.iframeCheckbox.style.margin = '0';
+      var iframeLabel = document.createElement('label');
+      iframeLabel.htmlFor = 'webeng-scan-iframes';
+      iframeLabel.textContent = 'Iframes';
+      iframeLabel.style.cssText = 'font-size:11px;color:#aaa;cursor:pointer;margin-right:8px;';
+
+      // WASM checkbox
+      this.wasmCheckbox = document.createElement('input');
+      this.wasmCheckbox.type = 'checkbox';
+      this.wasmCheckbox.checked = true;
+      this.wasmCheckbox.id = 'webeng-scan-wasm';
+      this.wasmCheckbox.style.margin = '0';
+      var wasmLabel = document.createElement('label');
+      wasmLabel.htmlFor = 'webeng-scan-wasm';
+      wasmLabel.textContent = 'WASM';
+      wasmLabel.style.cssText = 'font-size:11px;color:#aaa;cursor:pointer;margin-right:4px;';
+
+      // WASM type select
+      this.wasmTypeSelect = document.createElement('select');
+      this.wasmTypeSelect.className = 'webeng-select';
+      this.wasmTypeSelect.style.cssText = 'font-size:11px;padding:2px 4px;margin-right:8px;';
+      var wasmTypes = [
+        { value: 'auto', label: 'Auto' },
+        { value: 'i32', label: 'Int32' },
+        { value: 'f32', label: 'Float32' },
+        { value: 'f64', label: 'Float64' }
+      ];
+      for (var wt = 0; wt < wasmTypes.length; wt++) {
+        var wopt = document.createElement('option');
+        wopt.value = wasmTypes[wt].value;
+        wopt.textContent = wasmTypes[wt].label;
+        this.wasmTypeSelect.appendChild(wopt);
+      }
+
+      // Tolerance
+      var tolLabel = document.createElement('span');
+      tolLabel.textContent = 'Tol:';
+      tolLabel.style.cssText = 'font-size:11px;color:#aaa;';
+      this.toleranceInput = document.createElement('input');
+      this.toleranceInput.type = 'text';
+      this.toleranceInput.className = 'webeng-input';
+      this.toleranceInput.value = '0';
+      this.toleranceInput.title = 'Float tolerance (0 = exact match)';
+      this.toleranceInput.style.cssText = 'width:45px;font-size:11px;padding:2px 4px;';
+
+      // Detect engine button
+      this.detectBtn = document.createElement('button');
+      this.detectBtn.className = 'webeng-btn small secondary';
+      this.detectBtn.textContent = 'Detect';
+      this.detectBtn.title = 'Auto-detect game engine';
+
+      row3.appendChild(this.iframeCheckbox);
+      row3.appendChild(iframeLabel);
+      row3.appendChild(this.wasmCheckbox);
+      row3.appendChild(wasmLabel);
+      row3.appendChild(this.wasmTypeSelect);
+      row3.appendChild(tolLabel);
+      row3.appendChild(this.toleranceInput);
+      row3.appendChild(this.detectBtn);
+
       // Scan info
       this.scanInfo = document.createElement('div');
       this.scanInfo.style.cssText = 'font-size:11px;color:#666;margin-bottom:8px;';
@@ -92,6 +163,7 @@
 
       this.element.appendChild(row1);
       this.element.appendChild(row2);
+      this.element.appendChild(row3);
       this.element.appendChild(this.scanInfo);
 
       this._bindEvents();
@@ -111,6 +183,12 @@
           self.scanInfo.textContent = 'Please enter a value to scan for.';
           return;
         }
+
+        // Apply settings to scanner
+        self.scanner.scanIframes = self.iframeCheckbox.checked;
+        self.scanner.scanWasm = self.wasmCheckbox.checked;
+        self.scanner.wasmScanType = self.wasmTypeSelect.value;
+        self.scanner.tolerance = parseFloat(self.toleranceInput.value) || 0;
 
         self._setScanning(true);
         self.scanner.firstScan(value, type, comparator).then(function () {
@@ -141,6 +219,53 @@
         self.firstScanBtn.disabled = false;
         self.nextScanBtn.disabled = true;
         self.scanInfo.textContent = 'Scan reset. Enter a value and click First Scan.';
+      });
+
+      // Detect engine button
+      this.detectBtn.addEventListener('click', function () {
+        if (!WebEng.EngineDetector) {
+          self.scanInfo.textContent = 'Engine detector not available.';
+          return;
+        }
+
+        var iframeSc = window.__WEBENG__ && window.__WEBENG__.iframeScanner;
+        if (iframeSc) {
+          try { iframeSc.detectIframes(); } catch (e) { /* ignore */ }
+        }
+
+        var engines = WebEng.EngineDetector.detectAll(iframeSc);
+
+        if (engines.length === 0) {
+          // Also report iframe info
+          var iframeInfo = iframeSc ? iframeSc.getIframeInfo() : [];
+          var iframeMsg = iframeInfo.length > 0 ?
+            ' Found ' + iframeInfo.length + ' iframe(s), ' +
+            iframeInfo.filter(function (f) { return f.accessible; }).length + ' accessible.' :
+            ' No iframes found.';
+          self.scanInfo.textContent = 'No recognized game engine detected.' + iframeMsg;
+        } else {
+          var lines = engines.map(function (e) {
+            return e.name + ' (' + e.context + ')' + (e.hasWasm ? ' [WASM]' : '');
+          });
+          self.scanInfo.textContent = 'Detected: ' + lines.join(', ');
+
+          // Auto-enable WASM if detected
+          if (engines.some(function (e) { return e.hasWasm; })) {
+            self.wasmCheckbox.checked = true;
+          }
+        }
+
+        // Also check for WASM modules
+        var wasmSc = window.__WEBENG__ && window.__WEBENG__.wasmScanner;
+        if (wasmSc) {
+          try {
+            wasmSc.detectModules(iframeSc);
+            if (wasmSc._modules.length > 0) {
+              self.scanInfo.textContent += ' | WASM: ' + wasmSc._modules.length +
+                ' module(s), ' + (wasmSc._modules[0].heapBuffer.byteLength / 1048576).toFixed(1) + 'MB heap';
+            }
+          } catch (e) { /* ignore */ }
+        }
       });
 
       // Enter key triggers scan

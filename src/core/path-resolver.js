@@ -55,16 +55,53 @@
     },
 
     /**
+     * Determine the root object and starting index for a parsed path.
+     * Handles "window.x.y", "iframe[0].x.y", etc.
+     */
+    _resolveRoot: function (parts) {
+      // "window.x.y"
+      if (parts[0] === 'window') {
+        return { root: window, startIndex: 1 };
+      }
+
+      // "iframe[N].x.y" — parsed as ['iframe', 'N', 'x', 'y']
+      if (parts[0] === 'iframe' && parts.length > 1 && /^\d+$/.test(parts[1])) {
+        var iframeIndex = parseInt(parts[1]);
+        var iframes = document.querySelectorAll('iframe');
+        if (iframeIndex < iframes.length) {
+          try {
+            var cw = iframes[iframeIndex].contentWindow;
+            if (cw) return { root: cw, startIndex: 2 };
+          } catch (e) { /* fall through */ }
+        }
+        throw new Error('Cannot access iframe[' + iframeIndex + ']');
+      }
+
+      // Default: start from window
+      return { root: window, startIndex: 0 };
+    },
+
+    /**
      * Resolve a path string to the value it points to.
      */
     resolveValue: function (path) {
+      // WASM path handling
+      var wasmInfo = WebEng.WasmScanner && WebEng.WasmScanner.parsePath(path);
+      if (wasmInfo && window.__WEBENG__ && window.__WEBENG__.wasmScanner) {
+        var ws = window.__WEBENG__.wasmScanner;
+        for (var m = 0; m < ws._modules.length; m++) {
+          if (ws._modules[m].name === wasmInfo.moduleName) {
+            return ws.readValue(m, wasmInfo.offset, wasmInfo.scanType);
+          }
+        }
+        throw new Error('WASM module not found: ' + wasmInfo.moduleName);
+      }
+
       var parts = this.parsePath(path);
-      var current = window;
+      var resolved = this._resolveRoot(parts);
+      var current = resolved.root;
 
-      // Skip 'window' prefix if present
-      var start = (parts[0] === 'window') ? 1 : 0;
-
-      for (var i = start; i < parts.length; i++) {
+      for (var i = resolved.startIndex; i < parts.length; i++) {
         if (current === null || current === undefined) {
           throw new Error('Cannot resolve path: ' + path + ' (null at depth ' + i + ')');
         }
@@ -79,12 +116,24 @@
      * Returns true on success, false on failure.
      */
     setValue: function (path, newValue) {
+      // WASM path handling
+      var wasmInfo = WebEng.WasmScanner && WebEng.WasmScanner.parsePath(path);
+      if (wasmInfo && window.__WEBENG__ && window.__WEBENG__.wasmScanner) {
+        var ws = window.__WEBENG__.wasmScanner;
+        for (var m = 0; m < ws._modules.length; m++) {
+          if (ws._modules[m].name === wasmInfo.moduleName) {
+            return ws.writeValue(m, wasmInfo.offset, Number(newValue), wasmInfo.scanType);
+          }
+        }
+        return false;
+      }
+
       var parts = this.parsePath(path);
-      var current = window;
-      var start = (parts[0] === 'window') ? 1 : 0;
+      var resolved = this._resolveRoot(parts);
+      var current = resolved.root;
 
       // Navigate to the parent of the target property
-      for (var i = start; i < parts.length - 1; i++) {
+      for (var i = resolved.startIndex; i < parts.length - 1; i++) {
         if (current === null || current === undefined) {
           return false;
         }

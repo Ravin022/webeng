@@ -258,9 +258,11 @@
         return;
       }
 
-      // Skip DOM nodes
+      // Skip DOM nodes (cross-frame safe: instanceof fails across contexts)
       try {
         if (root instanceof Node) return;
+        if (root.nodeType !== undefined && root.nodeName !== undefined &&
+            typeof root.appendChild === 'function') return;
       } catch (e) { /* ignore */ }
 
       var keys;
@@ -276,23 +278,22 @@
         var key = keys[i];
         if (this.skipKeys.has(key)) continue;
 
-        // Skip numeric-looking keys on non-array objects to avoid indexed DOM collections
+        // Skip numeric keys only on known DOM collections (not plain game objects)
         if (/^\d+$/.test(key) && !Array.isArray(root) && !ArrayBuffer.isView(root)) {
-          continue;
+          try {
+            if (root instanceof HTMLCollection || root instanceof NodeList ||
+                root instanceof DOMTokenList || root instanceof NamedNodeMap ||
+                root instanceof CSSRuleList || root instanceof StyleSheetList) {
+              continue;
+            }
+          } catch (e) { /* not a DOM collection — allow the key */ }
         }
 
         var fullPath = path + '.' + key;
         var value;
 
         try {
-          // Check for getters that might have side effects
-          var desc = Object.getOwnPropertyDescriptor(root, key);
-          if (desc && desc.get && !desc.set) {
-            // Read-only getter — might be expensive or side-effectful, skip deep objects
-            value = root[key];
-          } else {
-            value = root[key];
-          }
+          value = root[key];
         } catch (e) {
           continue;
         }
@@ -335,8 +336,11 @@
         return;
       }
 
+      // Skip DOM nodes (cross-frame safe)
       try {
         if (root instanceof Node) return;
+        if (root.nodeType !== undefined && root.nodeName !== undefined &&
+            typeof root.appendChild === 'function') return;
       } catch (e) { /* ignore */ }
 
       var keys;
@@ -352,8 +356,15 @@
         var key = keys[i];
         if (this.skipKeys.has(key)) continue;
 
+        // Skip numeric keys only on known DOM collections
         if (/^\d+$/.test(key) && !Array.isArray(root) && !ArrayBuffer.isView(root)) {
-          continue;
+          try {
+            if (root instanceof HTMLCollection || root instanceof NodeList ||
+                root instanceof DOMTokenList || root instanceof NamedNodeMap ||
+                root instanceof CSSRuleList || root instanceof StyleSheetList) {
+              continue;
+            }
+          } catch (e) { /* not a DOM collection — allow the key */ }
         }
 
         var fullPath = path + '.' + key;
@@ -444,16 +455,53 @@
     },
 
     /**
+     * Determine the root object and starting index for a parsed path.
+     * Handles "window.x.y", "iframe[0].x.y", etc.
+     */
+    _resolveRoot: function (parts) {
+      // "window.x.y"
+      if (parts[0] === 'window') {
+        return { root: window, startIndex: 1 };
+      }
+
+      // "iframe[N].x.y" — parsed as ['iframe', 'N', 'x', 'y']
+      if (parts[0] === 'iframe' && parts.length > 1 && /^\d+$/.test(parts[1])) {
+        var iframeIndex = parseInt(parts[1]);
+        var iframes = document.querySelectorAll('iframe');
+        if (iframeIndex < iframes.length) {
+          try {
+            var cw = iframes[iframeIndex].contentWindow;
+            if (cw) return { root: cw, startIndex: 2 };
+          } catch (e) { /* fall through */ }
+        }
+        throw new Error('Cannot access iframe[' + iframeIndex + ']');
+      }
+
+      // Default: start from window
+      return { root: window, startIndex: 0 };
+    },
+
+    /**
      * Resolve a path string to the value it points to.
      */
     resolveValue: function (path) {
+      // WASM path handling
+      var wasmInfo = WebEng.WasmScanner && WebEng.WasmScanner.parsePath(path);
+      if (wasmInfo && window.__WEBENG__ && window.__WEBENG__.wasmScanner) {
+        var ws = window.__WEBENG__.wasmScanner;
+        for (var m = 0; m < ws._modules.length; m++) {
+          if (ws._modules[m].name === wasmInfo.moduleName) {
+            return ws.readValue(m, wasmInfo.offset, wasmInfo.scanType);
+          }
+        }
+        throw new Error('WASM module not found: ' + wasmInfo.moduleName);
+      }
+
       var parts = this.parsePath(path);
-      var current = window;
+      var resolved = this._resolveRoot(parts);
+      var current = resolved.root;
 
-      // Skip 'window' prefix if present
-      var start = (parts[0] === 'window') ? 1 : 0;
-
-      for (var i = start; i < parts.length; i++) {
+      for (var i = resolved.startIndex; i < parts.length; i++) {
         if (current === null || current === undefined) {
           throw new Error('Cannot resolve path: ' + path + ' (null at depth ' + i + ')');
         }
@@ -468,12 +516,24 @@
      * Returns true on success, false on failure.
      */
     setValue: function (path, newValue) {
+      // WASM path handling
+      var wasmInfo = WebEng.WasmScanner && WebEng.WasmScanner.parsePath(path);
+      if (wasmInfo && window.__WEBENG__ && window.__WEBENG__.wasmScanner) {
+        var ws = window.__WEBENG__.wasmScanner;
+        for (var m = 0; m < ws._modules.length; m++) {
+          if (ws._modules[m].name === wasmInfo.moduleName) {
+            return ws.writeValue(m, wasmInfo.offset, Number(newValue), wasmInfo.scanType);
+          }
+        }
+        return false;
+      }
+
       var parts = this.parsePath(path);
-      var current = window;
-      var start = (parts[0] === 'window') ? 1 : 0;
+      var resolved = this._resolveRoot(parts);
+      var current = resolved.root;
 
       // Navigate to the parent of the target property
-      for (var i = start; i < parts.length - 1; i++) {
+      for (var i = resolved.startIndex; i < parts.length - 1; i++) {
         if (current === null || current === undefined) {
           return false;
         }
@@ -513,32 +573,623 @@
   window.WebEng.PathResolver = PathResolver;
 })();
 /**
+ * WebEng IframeScanner — detect and scan game iframes
+ */
+(function () {
+  'use strict';
+
+  class IframeScanner {
+    constructor(eventBus) {
+      this.eventBus = eventBus;
+      this._iframeContexts = [];
+    }
+
+    /**
+     * Discover all iframes on the page.
+     * Returns array of { index, iframe, contentWindow, accessible, src }
+     */
+    detectIframes() {
+      this._iframeContexts = [];
+      var iframes = document.querySelectorAll('iframe');
+      var results = [];
+
+      for (var i = 0; i < iframes.length; i++) {
+        var iframe = iframes[i];
+        var entry = {
+          index: i,
+          iframe: iframe,
+          contentWindow: null,
+          accessible: false,
+          src: iframe.src || '(no src)'
+        };
+
+        try {
+          var cw = iframe.contentWindow;
+          // Same-origin test: accessing .document throws on cross-origin
+          if (cw && cw.document) {
+            entry.contentWindow = cw;
+            entry.accessible = true;
+          }
+        } catch (e) {
+          entry.accessible = false;
+        }
+
+        results.push(entry);
+        this._iframeContexts.push(entry);
+      }
+
+      this.eventBus.emit('iframe:detected', {
+        total: results.length,
+        accessible: results.filter(function (r) { return r.accessible; }).length,
+        iframes: results.map(function (r) {
+          return { index: r.index, src: r.src, accessible: r.accessible };
+        })
+      });
+
+      return results;
+    }
+
+    /**
+     * Get accessible iframe contentWindows for scanning.
+     */
+    getAccessibleContexts() {
+      return this._iframeContexts.filter(function (ctx) {
+        return ctx.accessible && ctx.contentWindow;
+      });
+    }
+
+    /**
+     * Walk an iframe's object graph using the provided ObjectWalker.
+     * Results are tagged with iframe-prefixed paths: "iframe[0].game.player.hp"
+     * The walker should NOT be reset before this — we append to existing results.
+     */
+    async walkIframe(walker, ctx) {
+      var prefix = 'iframe[' + ctx.index + ']';
+      await walker.walkAsync(ctx.contentWindow, prefix, 0);
+    }
+
+    /**
+     * Get detected iframe info for display.
+     */
+    getIframeInfo() {
+      return this._iframeContexts.map(function (ctx) {
+        return {
+          index: ctx.index,
+          src: ctx.src,
+          accessible: ctx.accessible
+        };
+      });
+    }
+  }
+
+  window.WebEng = window.WebEng || {};
+  window.WebEng.IframeScanner = IframeScanner;
+})();
+/**
+ * WebEng WasmScanner — scan WebAssembly linear memory for game values
+ */
+(function () {
+  'use strict';
+
+  var MAX_RESULTS = 50000;
+
+  class WasmScanner {
+    constructor(eventBus) {
+      this.eventBus = eventBus;
+      this._modules = [];
+      this._offsets = [];
+      this._scanType = 'i32';
+      this._currentModuleIndex = 0;
+    }
+
+    /**
+     * Search for Emscripten/Unity Module objects in the given window
+     * and any accessible iframe contexts.
+     */
+    detectModules(iframeScanner) {
+      this._modules = [];
+      var searchRoots = [{ root: window, prefix: '' }];
+
+      // Also search accessible iframes
+      if (iframeScanner) {
+        var ctxs = iframeScanner.getAccessibleContexts();
+        for (var i = 0; i < ctxs.length; i++) {
+          searchRoots.push({
+            root: ctxs[i].contentWindow,
+            prefix: 'iframe[' + ctxs[i].index + '].'
+          });
+        }
+      }
+
+      for (var s = 0; s < searchRoots.length; s++) {
+        var w = searchRoots[s].root;
+        var pfx = searchRoots[s].prefix;
+        this._checkCandidate(w, pfx + 'Module', w.Module);
+        this._checkCandidate(w, pfx + 'unityInstance', w.unityInstance);
+        this._checkCandidate(w, pfx + 'gameInstance', w.gameInstance);
+
+        // Unity 2020+ pattern
+        try {
+          if (w.unityInstance && w.unityInstance.Module) {
+            this._checkCandidate(w, pfx + 'unityInstance.Module', w.unityInstance.Module);
+          }
+        } catch (e) { /* ignore */ }
+
+        // Try _Module (some Emscripten builds)
+        this._checkCandidate(w, pfx + '_Module', w._Module);
+
+        // Walk top-level looking for any object with HEAP32
+        try {
+          var keys = Object.getOwnPropertyNames(w);
+          for (var k = 0; k < keys.length; k++) {
+            if (keys[k] === '__WEBENG__' || keys[k] === 'WebEng') continue;
+            try {
+              var obj = w[keys[k]];
+              if (obj && typeof obj === 'object' && obj.HEAP32 && obj.HEAP32.buffer) {
+                this._checkCandidate(w, pfx + keys[k], obj);
+              }
+            } catch (e) { /* ignore */ }
+          }
+        } catch (e) { /* ignore */ }
+      }
+
+      this.eventBus.emit('wasm:detected', {
+        count: this._modules.length,
+        modules: this._modules.map(function (m) {
+          return { name: m.name, heapSize: m.heapBuffer.byteLength };
+        })
+      });
+
+      return this._modules;
+    }
+
+    _checkCandidate(win, name, obj) {
+      if (!obj || typeof obj !== 'object') return;
+
+      // Avoid duplicates by checking heapBuffer identity
+      var heapBuffer = null;
+      try {
+        if (obj.HEAP32 && obj.HEAP32.buffer instanceof ArrayBuffer) {
+          heapBuffer = obj.HEAP32.buffer;
+        } else if (obj.wasmMemory && obj.wasmMemory.buffer instanceof ArrayBuffer) {
+          heapBuffer = obj.wasmMemory.buffer;
+        } else if (obj.asm && obj.asm.memory && obj.asm.memory.buffer instanceof ArrayBuffer) {
+          heapBuffer = obj.asm.memory.buffer;
+        }
+      } catch (e) { return; }
+
+      if (!heapBuffer) return;
+
+      // Check for duplicates
+      for (var i = 0; i < this._modules.length; i++) {
+        if (this._modules[i].heapBuffer === heapBuffer) return;
+      }
+
+      this._modules.push({
+        name: name,
+        module: obj,
+        heapBuffer: heapBuffer
+      });
+    }
+
+    /**
+     * Get a fresh buffer reference (handles WASM memory growth).
+     */
+    _getFreshBuffer(moduleIndex) {
+      var mod = this._modules[moduleIndex];
+      if (!mod) return null;
+
+      // Re-read in case memory.grow() was called
+      try {
+        if (mod.module.HEAP32 && mod.module.HEAP32.buffer) {
+          mod.heapBuffer = mod.module.HEAP32.buffer;
+        } else if (mod.module.wasmMemory && mod.module.wasmMemory.buffer) {
+          mod.heapBuffer = mod.module.wasmMemory.buffer;
+        }
+      } catch (e) { /* keep existing */ }
+
+      return mod.heapBuffer;
+    }
+
+    /**
+     * First scan: scan the entire WASM heap for a target value.
+     */
+    firstScan(targetValue, scanType, tolerance, moduleIndex) {
+      moduleIndex = moduleIndex || 0;
+      scanType = scanType || 'i32';
+      tolerance = tolerance || 0;
+      this._scanType = scanType;
+      this._currentModuleIndex = moduleIndex;
+      this._offsets = [];
+
+      if (this._modules.length === 0) return [];
+
+      var buffer = this._getFreshBuffer(moduleIndex);
+      if (!buffer) return [];
+
+      var mod = this._modules[moduleIndex];
+      var results = [];
+
+      if (scanType === 'i32') {
+        var heap32 = new Int32Array(buffer);
+        var targetI = targetValue | 0;
+        for (var i = 0; i < heap32.length && results.length < MAX_RESULTS; i++) {
+          if (heap32[i] === targetI) {
+            results.push({ offset: i * 4, value: heap32[i], type: 'i32' });
+          }
+        }
+      } else if (scanType === 'f32') {
+        var heapF32 = new Float32Array(buffer);
+        var eps32 = tolerance || 0.01;
+        for (var fi = 0; fi < heapF32.length && results.length < MAX_RESULTS; fi++) {
+          if (Math.abs(heapF32[fi] - targetValue) <= eps32) {
+            results.push({ offset: fi * 4, value: heapF32[fi], type: 'f32' });
+          }
+        }
+      } else if (scanType === 'f64') {
+        var heapF64 = new Float64Array(buffer);
+        var eps64 = tolerance || 0.001;
+        for (var di = 0; di < heapF64.length && results.length < MAX_RESULTS; di++) {
+          if (Math.abs(heapF64[di] - targetValue) <= eps64) {
+            results.push({ offset: di * 8, value: heapF64[di], type: 'f64' });
+          }
+        }
+      }
+
+      this._offsets = results;
+
+      // Convert to scanner-compatible format
+      var modName = mod.name;
+      var st = scanType;
+      return results.map(function (r) {
+        return {
+          path: 'wasm[' + modName + '].heap' + st + '[0x' + r.offset.toString(16) + ']',
+          value: r.value,
+          type: 'number',
+          previousValue: r.value,
+          _wasmOffset: r.offset,
+          _wasmType: r.type,
+          _wasmModuleIndex: moduleIndex
+        };
+      });
+    }
+
+    /**
+     * Next scan: re-read at previously found offsets and filter.
+     */
+    nextScan(targetValue, comparator, tolerance) {
+      if (this._modules.length === 0 || this._offsets.length === 0) return [];
+
+      var buffer = this._getFreshBuffer(this._currentModuleIndex);
+      if (!buffer) return [];
+
+      var mod = this._modules[this._currentModuleIndex];
+      var scanType = this._scanType;
+      var eps = tolerance || (scanType === 'i32' ? 0 : 0.01);
+      var filtered = [];
+
+      for (var i = 0; i < this._offsets.length; i++) {
+        var entry = this._offsets[i];
+        var currentValue;
+
+        try {
+          if (scanType === 'i32') {
+            currentValue = new Int32Array(buffer)[entry.offset / 4];
+          } else if (scanType === 'f32') {
+            currentValue = new Float32Array(buffer)[entry.offset / 4];
+          } else if (scanType === 'f64') {
+            currentValue = new Float64Array(buffer)[entry.offset / 8];
+          }
+        } catch (e) {
+          continue;
+        }
+
+        var match = false;
+        switch (comparator) {
+          case 'exact':
+            if (scanType === 'i32') {
+              match = (currentValue === (targetValue | 0));
+            } else {
+              match = Math.abs(currentValue - targetValue) <= eps;
+            }
+            break;
+          case 'changed':
+            match = currentValue !== entry.value;
+            break;
+          case 'unchanged':
+            match = currentValue === entry.value;
+            break;
+          case 'increased':
+            match = currentValue > entry.value;
+            break;
+          case 'decreased':
+            match = currentValue < entry.value;
+            break;
+          case 'greater':
+            match = currentValue > targetValue;
+            break;
+          case 'less':
+            match = currentValue < targetValue;
+            break;
+          default:
+            match = currentValue == targetValue;
+        }
+
+        if (match) {
+          filtered.push({
+            offset: entry.offset,
+            value: currentValue,
+            type: entry.type
+          });
+        }
+      }
+
+      this._offsets = filtered;
+
+      var modName = mod.name;
+      var st = scanType;
+      var modIdx = this._currentModuleIndex;
+      return filtered.map(function (r) {
+        return {
+          path: 'wasm[' + modName + '].heap' + st + '[0x' + r.offset.toString(16) + ']',
+          value: r.value,
+          type: 'number',
+          previousValue: r.value,
+          _wasmOffset: r.offset,
+          _wasmType: r.type,
+          _wasmModuleIndex: modIdx
+        };
+      });
+    }
+
+    /**
+     * Write a value to WASM memory at a specific byte offset.
+     */
+    writeValue(moduleIndex, offset, value, scanType) {
+      var buffer = this._getFreshBuffer(moduleIndex);
+      if (!buffer) return false;
+
+      try {
+        if (scanType === 'i32') {
+          new Int32Array(buffer)[offset / 4] = value | 0;
+        } else if (scanType === 'f32') {
+          new Float32Array(buffer)[offset / 4] = +value;
+        } else if (scanType === 'f64') {
+          new Float64Array(buffer)[offset / 8] = +value;
+        }
+        return true;
+      } catch (e) {
+        return false;
+      }
+    }
+
+    /**
+     * Read a value from WASM memory at a specific byte offset.
+     */
+    readValue(moduleIndex, offset, scanType) {
+      var buffer = this._getFreshBuffer(moduleIndex);
+      if (!buffer) return undefined;
+
+      try {
+        if (scanType === 'i32') {
+          return new Int32Array(buffer)[offset / 4];
+        } else if (scanType === 'f32') {
+          return new Float32Array(buffer)[offset / 4];
+        } else if (scanType === 'f64') {
+          return new Float64Array(buffer)[offset / 8];
+        }
+      } catch (e) {
+        return undefined;
+      }
+    }
+
+    /**
+     * Parse a WASM path string like "wasm[Module].heapi32[0x1a2b]"
+     */
+    static parsePath(path) {
+      var match = path.match(
+        /^wasm\[([^\]]+)\]\.heap(i32|f32|f64)\[0x([0-9a-fA-F]+)\]$/
+      );
+      if (!match) return null;
+      return {
+        moduleName: match[1],
+        scanType: match[2],
+        offset: parseInt(match[3], 16)
+      };
+    }
+  }
+
+  window.WebEng = window.WebEng || {};
+  window.WebEng.WasmScanner = WasmScanner;
+})();
+/**
+ * WebEng EngineDetector — detect common game engine patterns
+ */
+(function () {
+  'use strict';
+
+  var ENGINE_SIGNATURES = [
+    {
+      name: 'Unity WebGL',
+      detect: function (w) {
+        return !!(w.unityInstance || w.UnityLoader ||
+                  w.gameInstance ||
+                  (w.Module && w.Module.canvas && w.Module.HEAP32));
+      },
+      hasWasm: true,
+      tips: 'Use WASM scanning (Int32 or Float32). State lives in Module.HEAP32/HEAPF32.'
+    },
+    {
+      name: 'Phaser',
+      detect: function (w) {
+        return !!(w.Phaser || (w.game && w.game.scene));
+      },
+      hasWasm: false,
+      tips: 'Game state often in game.scene.scenes[0].data or game.registry.'
+    },
+    {
+      name: 'Construct 3',
+      detect: function (w) {
+        return !!(w.cr_getC2Runtime || w.C3 || w.c3_runtimeInterface);
+      },
+      hasWasm: true,
+      tips: 'Try scanning JS variables. Also supports WASM scanning.'
+    },
+    {
+      name: 'PixiJS',
+      detect: function (w) {
+        return !!(w.PIXI);
+      },
+      hasWasm: false,
+      tips: 'Game state in application objects, not PIXI itself. Use JS scanning.'
+    },
+    {
+      name: 'Three.js',
+      detect: function (w) {
+        return !!(w.THREE);
+      },
+      hasWasm: false,
+      tips: 'Look for scene/renderer objects. State may be in userData properties.'
+    },
+    {
+      name: 'Godot',
+      detect: function (w) {
+        return !!((w.Engine && w.Engine.isWebGLAvailable) || w.Godot);
+      },
+      hasWasm: true,
+      tips: 'Godot uses WASM. Use WASM scanning for game state.'
+    },
+    {
+      name: 'GDevelop',
+      detect: function (w) {
+        return !!(w.gdjs || w.runtimeScene);
+      },
+      hasWasm: false,
+      tips: 'State in gdjs.RuntimeGame or runtimeScene variables.'
+    },
+    {
+      name: 'Emscripten',
+      detect: function (w) {
+        return !!(w.Module && (w.Module.HEAP32 || w.Module.wasmMemory));
+      },
+      hasWasm: true,
+      tips: 'WASM memory available via Module.HEAP32/HEAPF32. Use WASM scanning.'
+    }
+  ];
+
+  var EngineDetector = {
+    /**
+     * Detect engines in the given window context.
+     */
+    detect: function (targetWindow) {
+      targetWindow = targetWindow || window;
+      var found = [];
+
+      for (var i = 0; i < ENGINE_SIGNATURES.length; i++) {
+        var sig = ENGINE_SIGNATURES[i];
+        try {
+          if (sig.detect(targetWindow)) {
+            found.push({
+              name: sig.name,
+              hasWasm: sig.hasWasm,
+              tips: sig.tips
+            });
+          }
+        } catch (e) { /* skip */ }
+      }
+      return found;
+    },
+
+    /**
+     * Detect engines across main window and all accessible iframes.
+     */
+    detectAll: function (iframeScanner) {
+      var results = [];
+
+      // Check main window
+      var mainEngines = this.detect(window);
+      for (var i = 0; i < mainEngines.length; i++) {
+        mainEngines[i].context = 'window';
+        results.push(mainEngines[i]);
+      }
+
+      // Check accessible iframes
+      if (iframeScanner) {
+        var ctxs = iframeScanner.getAccessibleContexts();
+        for (var j = 0; j < ctxs.length; j++) {
+          try {
+            var iframeEngines = this.detect(ctxs[j].contentWindow);
+            for (var k = 0; k < iframeEngines.length; k++) {
+              iframeEngines[k].context = 'iframe[' + ctxs[j].index + ']';
+              results.push(iframeEngines[k]);
+            }
+          } catch (e) { /* cross-origin, skip */ }
+        }
+      }
+
+      return results;
+    }
+  };
+
+  window.WebEng = window.WebEng || {};
+  window.WebEng.EngineDetector = EngineDetector;
+})();
+/**
  * WebEng Scanner — first scan / next scan workflow with comparators
+ * Integrates JS object scanning, iframe scanning, and WASM memory scanning.
  */
 (function () {
   'use strict';
 
   class Scanner {
-    constructor(objectWalker, pathResolver, eventBus) {
+    constructor(objectWalker, pathResolver, eventBus, options) {
+      options = options || {};
       this.walker = objectWalker;
       this.pathResolver = pathResolver;
       this.eventBus = eventBus;
+
+      this.iframeScanner = options.iframeScanner || null;
+      this.wasmScanner = options.wasmScanner || null;
+
       this.scanResults = [];
+      this.wasmResults = [];
       this.scanCount = 0;
       this.isScanning = false;
+
+      // Configurable from UI
+      this.scanIframes = true;
+      this.scanWasm = true;
+      this.tolerance = 0;
+      this.wasmScanType = 'auto'; // 'auto', 'i32', 'f32', 'f64'
     }
 
     /**
-     * First scan: walk the entire object graph and filter by value/type/comparator.
+     * First scan: walk the entire object graph (+ iframes + WASM) and filter.
      */
     async firstScan(targetValue, targetType, comparator) {
       this.scanCount = 1;
       this.isScanning = true;
+      this.wasmResults = [];
       this.eventBus.emit('scan:start', { scanNumber: 1 });
 
+      // 1. Walk the main window object graph
       this.walker.reset();
       await this.walker.walkAsync();
 
+      // 2. Walk accessible iframes
+      if (this.scanIframes && this.iframeScanner) {
+        try {
+          this.iframeScanner.detectIframes();
+          var contexts = this.iframeScanner.getAccessibleContexts();
+          for (var c = 0; c < contexts.length; c++) {
+            await this.iframeScanner.walkIframe(this.walker, contexts[c]);
+          }
+        } catch (e) {
+          // Iframe scanning failed — continue with what we have
+        }
+      }
+
+      // 3. Filter JS results
       var allResults = this.walker.results;
       var filtered = [];
 
@@ -557,6 +1208,35 @@
             type: entry.type,
             previousValue: entry.value
           });
+        }
+      }
+
+      // 4. WASM memory scan
+      if (this.scanWasm && this.wasmScanner) {
+        try {
+          this.wasmScanner.detectModules(this.iframeScanner);
+          var numVal = Number(targetValue);
+
+          if (!isNaN(numVal) && (targetType === 'number' || targetType === 'any')) {
+            // Determine scan type
+            var wasmType = this.wasmScanType;
+            if (wasmType === 'auto') {
+              wasmType = Number.isInteger(numVal) ? 'i32' : 'f32';
+            }
+
+            var wasmHits = this.wasmScanner.firstScan(
+              numVal, wasmType, this.tolerance || (wasmType === 'i32' ? 0 : 0.01), 0
+            );
+
+            this.wasmResults = wasmHits;
+
+            // Append to filtered results
+            for (var w = 0; w < wasmHits.length; w++) {
+              filtered.push(wasmHits[w]);
+            }
+          }
+        } catch (e) {
+          // WASM scanning failed — continue with JS results
         }
       }
 
@@ -582,10 +1262,14 @@
 
       var filtered = [];
 
+      // Re-check JS/iframe results
       for (var i = 0; i < this.scanResults.length; i++) {
         var entry = this.scanResults[i];
-        var currentValue;
 
+        // Skip WASM entries — handled separately below
+        if (entry._wasmOffset !== undefined) continue;
+
+        var currentValue;
         try {
           currentValue = this.pathResolver.resolveValue(entry.path);
         } catch (e) {
@@ -617,6 +1301,22 @@
         }
       }
 
+      // Re-scan WASM offsets
+      if (this.wasmScanner && this.wasmResults.length > 0) {
+        try {
+          var wasmFiltered = this.wasmScanner.nextScan(
+            Number(targetValue), comparator, this.tolerance
+          );
+          this.wasmResults = wasmFiltered;
+
+          for (var w = 0; w < wasmFiltered.length; w++) {
+            filtered.push(wasmFiltered[w]);
+          }
+        } catch (e) {
+          // WASM re-scan failed
+        }
+      }
+
       this.scanResults = filtered;
       this.isScanning = false;
 
@@ -634,6 +1334,7 @@
      */
     reset() {
       this.scanResults = [];
+      this.wasmResults = [];
       this.scanCount = 0;
       this.isScanning = false;
       this.eventBus.emit('scan:reset');
@@ -656,6 +1357,10 @@
       switch (comparator) {
         case 'exact':
           if (type === 'string') return String(a) === String(t);
+          // Float tolerance for numeric comparison
+          if (this.tolerance > 0 && typeof a === 'number') {
+            return Math.abs(a - t) <= this.tolerance;
+          }
           return a === t;
         case 'greater':
           return a > t;
@@ -664,14 +1369,13 @@
         case 'not_equal':
           return a !== t;
         case 'between':
-          // target should be "min,max" format
           var bounds = String(target).split(',');
           if (bounds.length === 2) {
             return a >= Number(bounds[0]) && a <= Number(bounds[1]);
           }
           return false;
         default:
-          return a == t; // loose equality as fallback
+          return a == t;
       }
     }
   }
@@ -2764,6 +3468,7 @@
 })();
 /**
  * WebEng ScannerPanel — UI for first scan / next scan workflow
+ * Includes iframe, WASM, tolerance, and engine detection controls.
  */
 (function () {
   'use strict';
@@ -2849,6 +3554,76 @@
       row2.appendChild(this.nextScanBtn);
       row2.appendChild(this.resetBtn);
 
+      // Scan scope row (iframe + WASM + tolerance)
+      var row3 = document.createElement('div');
+      row3.className = 'webeng-row';
+      row3.style.cssText = 'flex-wrap:wrap;gap:6px;';
+
+      // Iframe checkbox
+      this.iframeCheckbox = document.createElement('input');
+      this.iframeCheckbox.type = 'checkbox';
+      this.iframeCheckbox.checked = true;
+      this.iframeCheckbox.id = 'webeng-scan-iframes';
+      this.iframeCheckbox.style.margin = '0';
+      var iframeLabel = document.createElement('label');
+      iframeLabel.htmlFor = 'webeng-scan-iframes';
+      iframeLabel.textContent = 'Iframes';
+      iframeLabel.style.cssText = 'font-size:11px;color:#aaa;cursor:pointer;margin-right:8px;';
+
+      // WASM checkbox
+      this.wasmCheckbox = document.createElement('input');
+      this.wasmCheckbox.type = 'checkbox';
+      this.wasmCheckbox.checked = true;
+      this.wasmCheckbox.id = 'webeng-scan-wasm';
+      this.wasmCheckbox.style.margin = '0';
+      var wasmLabel = document.createElement('label');
+      wasmLabel.htmlFor = 'webeng-scan-wasm';
+      wasmLabel.textContent = 'WASM';
+      wasmLabel.style.cssText = 'font-size:11px;color:#aaa;cursor:pointer;margin-right:4px;';
+
+      // WASM type select
+      this.wasmTypeSelect = document.createElement('select');
+      this.wasmTypeSelect.className = 'webeng-select';
+      this.wasmTypeSelect.style.cssText = 'font-size:11px;padding:2px 4px;margin-right:8px;';
+      var wasmTypes = [
+        { value: 'auto', label: 'Auto' },
+        { value: 'i32', label: 'Int32' },
+        { value: 'f32', label: 'Float32' },
+        { value: 'f64', label: 'Float64' }
+      ];
+      for (var wt = 0; wt < wasmTypes.length; wt++) {
+        var wopt = document.createElement('option');
+        wopt.value = wasmTypes[wt].value;
+        wopt.textContent = wasmTypes[wt].label;
+        this.wasmTypeSelect.appendChild(wopt);
+      }
+
+      // Tolerance
+      var tolLabel = document.createElement('span');
+      tolLabel.textContent = 'Tol:';
+      tolLabel.style.cssText = 'font-size:11px;color:#aaa;';
+      this.toleranceInput = document.createElement('input');
+      this.toleranceInput.type = 'text';
+      this.toleranceInput.className = 'webeng-input';
+      this.toleranceInput.value = '0';
+      this.toleranceInput.title = 'Float tolerance (0 = exact match)';
+      this.toleranceInput.style.cssText = 'width:45px;font-size:11px;padding:2px 4px;';
+
+      // Detect engine button
+      this.detectBtn = document.createElement('button');
+      this.detectBtn.className = 'webeng-btn small secondary';
+      this.detectBtn.textContent = 'Detect';
+      this.detectBtn.title = 'Auto-detect game engine';
+
+      row3.appendChild(this.iframeCheckbox);
+      row3.appendChild(iframeLabel);
+      row3.appendChild(this.wasmCheckbox);
+      row3.appendChild(wasmLabel);
+      row3.appendChild(this.wasmTypeSelect);
+      row3.appendChild(tolLabel);
+      row3.appendChild(this.toleranceInput);
+      row3.appendChild(this.detectBtn);
+
       // Scan info
       this.scanInfo = document.createElement('div');
       this.scanInfo.style.cssText = 'font-size:11px;color:#666;margin-bottom:8px;';
@@ -2856,6 +3631,7 @@
 
       this.element.appendChild(row1);
       this.element.appendChild(row2);
+      this.element.appendChild(row3);
       this.element.appendChild(this.scanInfo);
 
       this._bindEvents();
@@ -2875,6 +3651,12 @@
           self.scanInfo.textContent = 'Please enter a value to scan for.';
           return;
         }
+
+        // Apply settings to scanner
+        self.scanner.scanIframes = self.iframeCheckbox.checked;
+        self.scanner.scanWasm = self.wasmCheckbox.checked;
+        self.scanner.wasmScanType = self.wasmTypeSelect.value;
+        self.scanner.tolerance = parseFloat(self.toleranceInput.value) || 0;
 
         self._setScanning(true);
         self.scanner.firstScan(value, type, comparator).then(function () {
@@ -2905,6 +3687,53 @@
         self.firstScanBtn.disabled = false;
         self.nextScanBtn.disabled = true;
         self.scanInfo.textContent = 'Scan reset. Enter a value and click First Scan.';
+      });
+
+      // Detect engine button
+      this.detectBtn.addEventListener('click', function () {
+        if (!WebEng.EngineDetector) {
+          self.scanInfo.textContent = 'Engine detector not available.';
+          return;
+        }
+
+        var iframeSc = window.__WEBENG__ && window.__WEBENG__.iframeScanner;
+        if (iframeSc) {
+          try { iframeSc.detectIframes(); } catch (e) { /* ignore */ }
+        }
+
+        var engines = WebEng.EngineDetector.detectAll(iframeSc);
+
+        if (engines.length === 0) {
+          // Also report iframe info
+          var iframeInfo = iframeSc ? iframeSc.getIframeInfo() : [];
+          var iframeMsg = iframeInfo.length > 0 ?
+            ' Found ' + iframeInfo.length + ' iframe(s), ' +
+            iframeInfo.filter(function (f) { return f.accessible; }).length + ' accessible.' :
+            ' No iframes found.';
+          self.scanInfo.textContent = 'No recognized game engine detected.' + iframeMsg;
+        } else {
+          var lines = engines.map(function (e) {
+            return e.name + ' (' + e.context + ')' + (e.hasWasm ? ' [WASM]' : '');
+          });
+          self.scanInfo.textContent = 'Detected: ' + lines.join(', ');
+
+          // Auto-enable WASM if detected
+          if (engines.some(function (e) { return e.hasWasm; })) {
+            self.wasmCheckbox.checked = true;
+          }
+        }
+
+        // Also check for WASM modules
+        var wasmSc = window.__WEBENG__ && window.__WEBENG__.wasmScanner;
+        if (wasmSc) {
+          try {
+            wasmSc.detectModules(iframeSc);
+            if (wasmSc._modules.length > 0) {
+              self.scanInfo.textContent += ' | WASM: ' + wasmSc._modules.length +
+                ' module(s), ' + (wasmSc._modules[0].heapBuffer.byteLength / 1048576).toFixed(1) + 'MB heap';
+            }
+          } catch (e) { /* ignore */ }
+        }
       });
 
       // Enter key triggers scan
@@ -4028,14 +4857,20 @@
 
   // ===== 3. Bypass Mechanisms (must install early) =====
   var antiTamper = new WebEng.AntiTamper(eventBus);
-  // Auto-enable bypasses by default so they catch future game code
   antiTamper.enableAll();
   logger.info('Anti-tamper bypasses enabled.');
 
   // ===== 4. Core Engine =====
-  var objectWalker = new WebEng.ObjectWalker({ maxDepth: 7 });
+  var objectWalker = new WebEng.ObjectWalker({ maxDepth: 10 });
   var pathResolver = WebEng.PathResolver;
-  var scanner = new WebEng.Scanner(objectWalker, pathResolver, eventBus);
+  var iframeScanner = new WebEng.IframeScanner(eventBus);
+  var wasmScanner = new WebEng.WasmScanner(eventBus);
+
+  var scanner = new WebEng.Scanner(objectWalker, pathResolver, eventBus, {
+    iframeScanner: iframeScanner,
+    wasmScanner: wasmScanner
+  });
+
   var modifier = new WebEng.Modifier(pathResolver, eventBus);
 
   // ===== 5. Network Hooks =====
@@ -4087,7 +4922,6 @@
   });
 
   eventBus.on('request:logged', function () {
-    // Update status briefly
     overlay.setStatus('Request intercepted');
   });
 
@@ -4105,6 +4939,8 @@
     antiTamper: antiTamper,
     objectWalker: objectWalker,
     pathResolver: pathResolver,
+    iframeScanner: iframeScanner,
+    wasmScanner: wasmScanner,
     logger: logger,
 
     // Convenience API for console usage
@@ -4128,11 +4964,55 @@
     },
     unfreezeObj: function (obj) {
       return antiTamper.unfreezeObject(obj);
+    },
+    wasmScan: function (value, type) {
+      wasmScanner.detectModules(iframeScanner);
+      return wasmScanner.firstScan(Number(value), type || 'i32', 0.01, 0);
+    },
+    detectEngine: function () {
+      iframeScanner.detectIframes();
+      return WebEng.EngineDetector.detectAll(iframeScanner);
     }
   };
 
-  // Also store hookManager on namespace for settings panel
   WebEng._hookManager = hookManager;
+
+  // ===== 9. Auto-detect on load (delayed to let game initialize) =====
+  setTimeout(function () {
+    try {
+      iframeScanner.detectIframes();
+      var iframeInfo = iframeScanner.getIframeInfo();
+
+      var engines = WebEng.EngineDetector.detectAll(iframeScanner);
+      wasmScanner.detectModules(iframeScanner);
+
+      var statusParts = [];
+
+      if (iframeInfo.length > 0) {
+        var accessible = iframeInfo.filter(function (f) { return f.accessible; }).length;
+        statusParts.push(iframeInfo.length + ' iframe(s), ' + accessible + ' accessible');
+        logger.info('Iframes:', iframeInfo.length, 'total,', accessible, 'accessible');
+      }
+
+      if (engines.length > 0) {
+        var names = engines.map(function (e) { return e.name; });
+        statusParts.push('Engine: ' + names.join(', '));
+        logger.info('Detected engines:', names.join(', '));
+      }
+
+      if (wasmScanner._modules.length > 0) {
+        var heapMB = (wasmScanner._modules[0].heapBuffer.byteLength / 1048576).toFixed(1);
+        statusParts.push('WASM: ' + wasmScanner._modules.length + ' module(s), ' + heapMB + 'MB');
+        logger.info('WASM modules:', wasmScanner._modules.length);
+      }
+
+      if (statusParts.length > 0) {
+        eventBus.emit('status:update', statusParts.join(' | '));
+      }
+    } catch (e) {
+      logger.warn('Auto-detection failed:', e.message);
+    }
+  }, 2000);
 
   logger.info('WebEng loaded successfully. Press Ctrl+Shift+G to toggle UI.');
   console.log(
@@ -4141,7 +5021,7 @@
     'background:#1a1a2e;color:#00d4ff;padding:4px 8px;border-radius:0 4px 4px 0;'
   );
   console.log(
-    '%cAPI: __WEBENG__.scan(value) | __WEBENG__.set(path, value) | __WEBENG__.freeze(path, value)',
+    '%cAPI: __WEBENG__.scan(value) | __WEBENG__.set(path, value) | __WEBENG__.freeze(path, value) | __WEBENG__.detectEngine()',
     'color:#888;font-size:11px;'
   );
 })();
