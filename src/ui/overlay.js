@@ -189,6 +189,29 @@
       return this.shadow;
     }
 
+    /**
+     * Enable iframe mode — adds visual badge and adapts sizing for small viewports.
+     */
+    setIframeMode(enabled) {
+      if (!enabled) return;
+      // Add "IFRAME" badge next to title
+      var title = this.titlebar.querySelector('.webeng-title');
+      if (title) {
+        var badge = document.createElement('span');
+        badge.className = 'webeng-iframe-badge';
+        badge.textContent = 'IFRAME';
+        title.appendChild(badge);
+      }
+
+      // Adaptive sizing for small iframe viewports
+      var vw = window.innerWidth;
+      var vh = window.innerHeight;
+      if (vw < 600 || vh < 500) {
+        this.panel.style.width = Math.min(380, vw - 20) + 'px';
+        this.panel.style.height = Math.min(420, vh - 20) + 'px';
+      }
+    }
+
     destroy() {
       document.removeEventListener('keydown', this._onKeyDown, true);
       if (this.host && this.host.parentNode) {

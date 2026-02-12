@@ -52,6 +52,17 @@
         })
       });
 
+      // Emit cross-origin event if any inaccessible iframes found
+      var crossOrigin = results.filter(function (r) {
+        return !r.accessible && r.src && r.src !== '(no src)';
+      });
+      if (crossOrigin.length > 0) {
+        this.eventBus.emit('iframe:cross-origin-detected', {
+          count: crossOrigin.length,
+          iframes: this.getCrossOriginInfo()
+        });
+      }
+
       return results;
     }
 
@@ -85,6 +96,27 @@
           accessible: ctx.accessible
         };
       });
+    }
+
+    /**
+     * Get detailed info about cross-origin (inaccessible) iframes.
+     * Returns array sorted by area descending (largest = most likely the game).
+     */
+    getCrossOriginInfo() {
+      return this._iframeContexts
+        .filter(function (ctx) { return !ctx.accessible && ctx.src && ctx.src !== '(no src)'; })
+        .map(function (ctx) {
+          var origin = '';
+          try { origin = new URL(ctx.src).origin; } catch (e) { /* ignore */ }
+          var area = 0;
+          try {
+            var w = ctx.iframe.offsetWidth || ctx.iframe.clientWidth || 0;
+            var h = ctx.iframe.offsetHeight || ctx.iframe.clientHeight || 0;
+            area = w * h;
+          } catch (e) { /* ignore */ }
+          return { index: ctx.index, src: ctx.src, origin: origin, area: area };
+        })
+        .sort(function (a, b) { return b.area - a.area; });
     }
   }
 

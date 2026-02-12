@@ -12,8 +12,11 @@
       this.resultsPanel = options.resultsPanel;
       this.networkPanel = options.networkPanel;
       this.settingsPanel = options.settingsPanel;
+      this.frameGuide = options.frameGuide || null;
       this.tabs = [];
       this.activeTab = 0;
+      this.frameGuideEl = null;
+      this._contentContainer = null;
     }
 
     render() {
@@ -67,6 +70,23 @@
         contentContainer.appendChild(this.panels[j]);
       }
 
+      // Frame guide (hidden initially, shown when cross-origin iframes detected)
+      if (this.frameGuide) {
+        this.frameGuideEl = this.frameGuide.render();
+        this.frameGuideEl.style.display = 'none';
+        contentContainer.appendChild(this.frameGuideEl);
+
+        var self2 = this;
+        this.eventBus.on('iframe:cross-origin-detected', function (data) {
+          self2._showFrameGuide(data);
+        });
+
+        this.eventBus.on('frameguide:dismissed', function () {
+          self2._hideFrameGuide();
+        });
+      }
+
+      this._contentContainer = contentContainer;
       body.appendChild(contentContainer);
     }
 
@@ -76,10 +96,44 @@
         this.tabs[i].classList.remove('active');
         this.panels[i].classList.remove('active');
       }
+      // Hide frame guide when switching tabs
+      if (this.frameGuideEl) {
+        this.frameGuideEl.style.display = 'none';
+      }
       // Activate selected
       this.tabs[index].classList.add('active');
       this.panels[index].classList.add('active');
       this.activeTab = index;
+    }
+
+    /**
+     * Show the frame guide overlay and hide regular panels.
+     */
+    _showFrameGuide(data) {
+      if (!this.frameGuideEl || !this.frameGuide) return;
+
+      // Hide all regular panels
+      for (var i = 0; i < this.panels.length; i++) {
+        this.panels[i].classList.remove('active');
+      }
+
+      // Show frame guide with detected data
+      var portal = WebEng.ContextDetector ? WebEng.ContextDetector.detectPortal() : null;
+      this.frameGuide.show(data.iframes, portal);
+    }
+
+    /**
+     * Hide the frame guide and restore the previous active tab.
+     */
+    _hideFrameGuide() {
+      if (this.frameGuideEl) {
+        this.frameGuideEl.style.display = 'none';
+      }
+      // Re-activate the current tab
+      if (this.tabs[this.activeTab]) {
+        this.tabs[this.activeTab].classList.add('active');
+        this.panels[this.activeTab].classList.add('active');
+      }
     }
   }
 

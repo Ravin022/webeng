@@ -147,6 +147,9 @@
       this.detectBtn.textContent = 'Detect';
       this.detectBtn.title = 'Auto-detect game engine';
 
+      // Store reference for iframe mode adjustment
+      this._iframeLabel = iframeLabel;
+
       row3.appendChild(this.iframeCheckbox);
       row3.appendChild(iframeLabel);
       row3.appendChild(this.wasmCheckbox);
@@ -165,6 +168,16 @@
       this.element.appendChild(row2);
       this.element.appendChild(row3);
       this.element.appendChild(this.scanInfo);
+
+      // Iframe mode adjustments (applied after __WEBENG__ is registered)
+      var self0 = this;
+      setTimeout(function () {
+        if (window.__WEBENG__ && window.__WEBENG__.isIframeMode) {
+          self0.iframeCheckbox.checked = false;
+          self0._iframeLabel.textContent = 'Sub-iframes';
+          self0._iframeLabel.title = 'Scan iframes within this frame (usually not needed)';
+        }
+      }, 100);
 
       this._bindEvents();
 
@@ -228,12 +241,22 @@
           return;
         }
 
-        var iframeSc = window.__WEBENG__ && window.__WEBENG__.iframeScanner;
-        if (iframeSc) {
-          try { iframeSc.detectIframes(); } catch (e) { /* ignore */ }
-        }
+        var isIframeMode = window.__WEBENG__ && window.__WEBENG__.isIframeMode;
+        var engines;
 
-        var engines = WebEng.EngineDetector.detectAll(iframeSc);
+        if (isIframeMode) {
+          // In iframe mode, detect directly on current window
+          engines = WebEng.EngineDetector.detect(window);
+          for (var ei = 0; ei < engines.length; ei++) {
+            engines[ei].context = 'current frame';
+          }
+        } else {
+          var iframeSc = window.__WEBENG__ && window.__WEBENG__.iframeScanner;
+          if (iframeSc) {
+            try { iframeSc.detectIframes(); } catch (e) { /* ignore */ }
+          }
+          engines = WebEng.EngineDetector.detectAll(iframeSc);
+        }
 
         if (engines.length === 0) {
           // Also report iframe info
@@ -259,7 +282,8 @@
         var wasmSc = window.__WEBENG__ && window.__WEBENG__.wasmScanner;
         if (wasmSc) {
           try {
-            wasmSc.detectModules(iframeSc);
+            var iframeSc2 = isIframeMode ? null : (window.__WEBENG__ && window.__WEBENG__.iframeScanner);
+            wasmSc.detectModules(iframeSc2);
             if (wasmSc._modules.length > 0) {
               self.scanInfo.textContent += ' | WASM: ' + wasmSc._modules.length +
                 ' module(s), ' + (wasmSc._modules[0].heapBuffer.byteLength / 1048576).toFixed(1) + 'MB heap';

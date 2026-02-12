@@ -44,6 +44,7 @@ cat \
   "$SRC/utils/event-bus.js" \
   "$SRC/utils/logger.js" \
   "$SRC/utils/type-detector.js" \
+  "$SRC/core/context-detector.js" \
   "$SRC/core/object-walker.js" \
   "$SRC/core/path-resolver.js" \
   "$SRC/core/iframe-scanner.js" \
@@ -51,6 +52,7 @@ cat \
   "$SRC/core/engine-detector.js" \
   "$SRC/core/scanner.js" \
   "$SRC/core/modifier.js" \
+  "$SRC/bridge/post-message-bridge.js" \
   "$SRC/hooks/hook-manager.js" \
   "$SRC/hooks/xhr-hook.js" \
   "$SRC/hooks/fetch-hook.js" \
@@ -65,6 +67,7 @@ cat \
   "$SRC/ui/results-panel.js" \
   "$SRC/ui/network-panel.js" \
   "$SRC/ui/settings-panel.js" \
+  "$SRC/ui/frame-guide.js" \
   "$SRC/ui/dashboard.js" \
   "$SRC/main.js" \
   >> "$OUTPUT"

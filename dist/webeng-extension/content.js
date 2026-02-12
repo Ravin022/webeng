@@ -1,3 +1,33 @@
+// WebEng — Auto-injected via Chrome extension
+// Only activates in frames that look like games (have a canvas or game engine globals)
+(function() {
+  'use strict';
+
+  // Skip if already loaded
+  if (window.__WEBENG__) return;
+
+  // In top-level frames, only load if we detect game-related content
+  // In sub-frames (iframes), always load since that's where games run
+  var isIframe = false;
+  try { isIframe = window !== window.top; } catch(e) { isIframe = true; }
+
+  if (!isIframe) {
+    // Top-level: wait a bit then check for game iframes before loading
+    setTimeout(function() {
+      var iframes = document.querySelectorAll('iframe');
+      if (iframes.length > 0 || document.querySelectorAll('canvas').length > 0) {
+        loadWebEng();
+      }
+    }, 1500);
+  } else {
+    // Inside an iframe: wait for game to initialize then load
+    setTimeout(function() {
+      loadWebEng();
+    }, 2000);
+  }
+
+  function loadWebEng() {
+    if (window.__WEBENG__) return;
 /**
  * WebEng v1.0 — Browser Game Value Modifier Engine
  * Inject this script into any web game page to scan, modify, and freeze
@@ -5888,5 +5918,7 @@
       '%cRunning in IFRAME MODE — scanning current frame directly.',
       'color:#22aa44;font-size:11px;font-weight:bold;'
     );
+  }
+})();
   }
 })();

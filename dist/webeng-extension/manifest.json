@@ -1,0 +1,29 @@
+{
+  "manifest_version": 3,
+  "name": "WebEng Game Modifier",
+  "version": "1.0",
+  "description": "Injects WebEng game value modifier into game portal frames",
+  "content_scripts": [
+    {
+      "matches": [
+        "*://*.crazygames.com/*",
+        "*://*.poki.com/*",
+        "*://*.newgrounds.com/*",
+        "*://*.itch.io/*",
+        "*://*.itch.zone/*",
+        "*://*.kongregate.com/*",
+        "*://*.armorgames.com/*",
+        "*://*.gamejolt.com/*",
+        "*://*.gamedistribution.com/*",
+        "*://*.gamemonetize.com/*",
+        "*://*.miniclip.com/*",
+        "*://*.y8.com/*"
+      ],
+      "js": ["content.js"],
+      "all_frames": true,
+      "world": "MAIN",
+      "run_at": "document_idle"
+    }
+  ],
+  "icons": {}
+}
