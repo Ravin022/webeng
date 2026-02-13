@@ -10,6 +10,7 @@
       this.freezeBypass = new WebEng.FreezeBypass();
       this.definePropertyBypass = new WebEng.DefinePropertyBypass();
       this.timerBypass = new WebEng.TimerBypass(eventBus);
+      this.keyboardShield = new WebEng.KeyboardShield();
       this._domObserverActive = false;
       this._originalQuerySelector = null;
     }
@@ -21,6 +22,7 @@
       this.freezeBypass.enable();
       this.definePropertyBypass.enable();
       this.timerBypass.enable();
+      this.keyboardShield.enable();
       this._enableDOMStealth();
     }
 
@@ -31,6 +33,7 @@
       this.freezeBypass.disable();
       this.definePropertyBypass.disable();
       this.timerBypass.disable();
+      this.keyboardShield.disable();
       this._disableDOMStealth();
     }
 
@@ -58,6 +61,7 @@
         case 'freeze': return this.freezeBypass;
         case 'defineProperty': return this.definePropertyBypass;
         case 'timer': return this.timerBypass;
+        case 'keyboard': return this.keyboardShield;
         default: return null;
       }
     }
@@ -70,6 +74,7 @@
         freeze: this.freezeBypass.enabled,
         defineProperty: this.definePropertyBypass.enabled,
         timer: this.timerBypass.enabled,
+        keyboard: this.keyboardShield.enabled,
         domStealth: this._domObserverActive
       };
     }

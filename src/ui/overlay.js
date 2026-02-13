@@ -29,8 +29,8 @@
 
       document.body.appendChild(this.host);
 
-      // Create closed shadow DOM
-      this.shadow = this.host.attachShadow({ mode: 'closed' });
+      // Create closed shadow DOM with delegatesFocus for better input handling
+      this.shadow = this.host.attachShadow({ mode: 'closed', delegatesFocus: true });
 
       // Inject styles
       var style = document.createElement('style');
@@ -63,6 +63,9 @@
 
       // Setup keyboard shortcut
       document.addEventListener('keydown', this._onKeyDown, true);
+
+      // Setup focus tracking for keyboard shield
+      this._setupFocusTracking();
 
       return this.shadow;
     }
@@ -138,6 +141,30 @@
         document.removeEventListener('pointermove', onMove);
         document.removeEventListener('pointerup', onUp);
       }
+    }
+
+    /**
+     * Track focus on input elements inside shadow DOM.
+     * Notifies the KeyboardShield when a WebEng input gains/loses focus,
+     * so it can suppress game keyboard event interception.
+     */
+    _setupFocusTracking() {
+      this.shadow.addEventListener('focusin', function (e) {
+        var tag = e.target && e.target.tagName;
+        if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') {
+          if (window.__WEBENG__ && window.__WEBENG__.antiTamper &&
+              window.__WEBENG__.antiTamper.keyboardShield) {
+            window.__WEBENG__.antiTamper.keyboardShield.setInputFocused(true);
+          }
+        }
+      });
+
+      this.shadow.addEventListener('focusout', function () {
+        if (window.__WEBENG__ && window.__WEBENG__.antiTamper &&
+            window.__WEBENG__.antiTamper.keyboardShield) {
+          window.__WEBENG__.antiTamper.keyboardShield.setInputFocused(false);
+        }
+      });
     }
 
     _onKeyDown(e) {

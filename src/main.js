@@ -102,27 +102,51 @@
   dashboard.render();
 
   // ===== 8. Status Updates =====
+  var _lastMeaningfulStatus = 'Ready';
+
   eventBus.on('scan:complete', function (data) {
-    overlay.setStatus(data.resultCount + ' result(s) — scan #' + data.scanNumber);
+    _lastMeaningfulStatus = data.resultCount + ' result(s) — scan #' + data.scanNumber;
+    overlay.setStatus(_lastMeaningfulStatus);
   });
 
   eventBus.on('scan:reset', function () {
-    overlay.setStatus('Ready');
+    _lastMeaningfulStatus = 'Ready';
+    overlay.setStatus(_lastMeaningfulStatus);
   });
 
   eventBus.on('value:modified', function (data) {
-    overlay.setStatus('Modified: ' + data.path.split('.').pop());
+    _lastMeaningfulStatus = 'Modified: ' + data.path.split('.').pop();
+    overlay.setStatus(_lastMeaningfulStatus);
   });
 
   eventBus.on('value:frozen', function (data) {
-    overlay.setStatus('Frozen: ' + data.path.split('.').pop());
+    _lastMeaningfulStatus = 'Frozen: ' + data.path.split('.').pop();
+    overlay.setStatus(_lastMeaningfulStatus);
   });
 
+  // Debounced network request status — don't flood the status bar
+  var _requestCount = 0;
+  var _requestDebounce = null;
   eventBus.on('request:logged', function () {
-    overlay.setStatus('Request intercepted');
+    _requestCount++;
+    if (!_requestDebounce) {
+      _requestDebounce = setTimeout(function () {
+        // Only show if no more important status is pending
+        if (_requestCount > 0) {
+          overlay.setStatus(_requestCount + ' request(s) intercepted');
+          _requestCount = 0;
+          // Revert to meaningful status after a brief display
+          setTimeout(function () {
+            overlay.setStatus(_lastMeaningfulStatus);
+          }, 2000);
+        }
+        _requestDebounce = null;
+      }, 3000);
+    }
   });
 
   eventBus.on('status:update', function (text) {
+    _lastMeaningfulStatus = text;
     overlay.setStatus(text);
   });
 

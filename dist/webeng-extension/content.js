@@ -2991,6 +2991,113 @@
   window.WebEng.TimerBypass = TimerBypass;
 })();
 /**
+ * WebEng KeyboardShield — prevents game code from blocking keyboard input
+ * in WebEng's input fields.
+ *
+ * Games (especially on CrazyGames) register capture-phase keyboard event
+ * listeners on document/window that call preventDefault() and stopPropagation(),
+ * preventing typing in ANY input field on the page.
+ *
+ * This module patches Event.prototype methods to become no-ops when:
+ *   1. The event is a KeyboardEvent
+ *   2. A WebEng input field currently has focus
+ *
+ * This allows keyboard events to flow normally to WebEng inputs while
+ * preserving game keyboard handling when WebEng inputs are not focused.
+ */
+(function () {
+  'use strict';
+
+  class KeyboardShield {
+    constructor() {
+      this.enabled = false;
+      this._inputFocused = false;
+      this._origPreventDefault = null;
+      this._origStopPropagation = null;
+      this._origStopImmediate = null;
+    }
+
+    /**
+     * Enable the keyboard shield by patching Event.prototype methods.
+     */
+    enable() {
+      if (this.enabled) return;
+      this.enabled = true;
+
+      var self = this;
+
+      // Save original methods
+      this._origPreventDefault = Event.prototype.preventDefault;
+      this._origStopPropagation = Event.prototype.stopPropagation;
+      this._origStopImmediate = Event.prototype.stopImmediatePropagation;
+
+      // Patch preventDefault — skip for keyboard events when WebEng input focused
+      Event.prototype.preventDefault = function () {
+        if (self._inputFocused && this instanceof KeyboardEvent) {
+          return;
+        }
+        return self._origPreventDefault.call(this);
+      };
+
+      // Patch stopPropagation — same logic
+      Event.prototype.stopPropagation = function () {
+        if (self._inputFocused && this instanceof KeyboardEvent) {
+          return;
+        }
+        return self._origStopPropagation.call(this);
+      };
+
+      // Patch stopImmediatePropagation — same logic
+      Event.prototype.stopImmediatePropagation = function () {
+        if (self._inputFocused && this instanceof KeyboardEvent) {
+          return;
+        }
+        return self._origStopImmediate.call(this);
+      };
+    }
+
+    /**
+     * Disable the keyboard shield and restore original methods.
+     */
+    disable() {
+      if (!this.enabled) return;
+
+      if (this._origPreventDefault) {
+        Event.prototype.preventDefault = this._origPreventDefault;
+      }
+      if (this._origStopPropagation) {
+        Event.prototype.stopPropagation = this._origStopPropagation;
+      }
+      if (this._origStopImmediate) {
+        Event.prototype.stopImmediatePropagation = this._origStopImmediate;
+      }
+
+      this._origPreventDefault = null;
+      this._origStopPropagation = null;
+      this._origStopImmediate = null;
+      this._inputFocused = false;
+      this.enabled = false;
+    }
+
+    /**
+     * Called by overlay.js focus tracking when a WebEng input gains/loses focus.
+     */
+    setInputFocused(focused) {
+      this._inputFocused = !!focused;
+    }
+
+    /**
+     * Check if a WebEng input is currently focused.
+     */
+    isInputFocused() {
+      return this._inputFocused;
+    }
+  }
+
+  window.WebEng = window.WebEng || {};
+  window.WebEng.KeyboardShield = KeyboardShield;
+})();
+/**
  * WebEng AntiTamper — orchestrator for all bypass mechanisms
  */
 (function () {
@@ -3002,6 +3109,7 @@
       this.freezeBypass = new WebEng.FreezeBypass();
       this.definePropertyBypass = new WebEng.DefinePropertyBypass();
       this.timerBypass = new WebEng.TimerBypass(eventBus);
+      this.keyboardShield = new WebEng.KeyboardShield();
       this._domObserverActive = false;
       this._originalQuerySelector = null;
     }
@@ -3013,6 +3121,7 @@
       this.freezeBypass.enable();
       this.definePropertyBypass.enable();
       this.timerBypass.enable();
+      this.keyboardShield.enable();
       this._enableDOMStealth();
     }
 
@@ -3023,6 +3132,7 @@
       this.freezeBypass.disable();
       this.definePropertyBypass.disable();
       this.timerBypass.disable();
+      this.keyboardShield.disable();
       this._disableDOMStealth();
     }
 
@@ -3050,6 +3160,7 @@
         case 'freeze': return this.freezeBypass;
         case 'defineProperty': return this.definePropertyBypass;
         case 'timer': return this.timerBypass;
+        case 'keyboard': return this.keyboardShield;
         default: return null;
       }
     }
@@ -3062,6 +3173,7 @@
         freeze: this.freezeBypass.enabled,
         defineProperty: this.definePropertyBypass.enabled,
         timer: this.timerBypass.enabled,
+        keyboard: this.keyboardShield.enabled,
         domStealth: this._domObserverActive
       };
     }
@@ -3807,8 +3919,8 @@
 
       document.body.appendChild(this.host);
 
-      // Create closed shadow DOM
-      this.shadow = this.host.attachShadow({ mode: 'closed' });
+      // Create closed shadow DOM with delegatesFocus for better input handling
+      this.shadow = this.host.attachShadow({ mode: 'closed', delegatesFocus: true });
 
       // Inject styles
       var style = document.createElement('style');
@@ -3841,6 +3953,9 @@
 
       // Setup keyboard shortcut
       document.addEventListener('keydown', this._onKeyDown, true);
+
+      // Setup focus tracking for keyboard shield
+      this._setupFocusTracking();
 
       return this.shadow;
     }
@@ -3916,6 +4031,30 @@
         document.removeEventListener('pointermove', onMove);
         document.removeEventListener('pointerup', onUp);
       }
+    }
+
+    /**
+     * Track focus on input elements inside shadow DOM.
+     * Notifies the KeyboardShield when a WebEng input gains/loses focus,
+     * so it can suppress game keyboard event interception.
+     */
+    _setupFocusTracking() {
+      this.shadow.addEventListener('focusin', function (e) {
+        var tag = e.target && e.target.tagName;
+        if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') {
+          if (window.__WEBENG__ && window.__WEBENG__.antiTamper &&
+              window.__WEBENG__.antiTamper.keyboardShield) {
+            window.__WEBENG__.antiTamper.keyboardShield.setInputFocused(true);
+          }
+        }
+      });
+
+      this.shadow.addEventListener('focusout', function () {
+        if (window.__WEBENG__ && window.__WEBENG__.antiTamper &&
+            window.__WEBENG__.antiTamper.keyboardShield) {
+          window.__WEBENG__.antiTamper.keyboardShield.setInputFocused(false);
+        }
+      });
     }
 
     _onKeyDown(e) {
@@ -5724,27 +5863,51 @@
   dashboard.render();
 
   // ===== 8. Status Updates =====
+  var _lastMeaningfulStatus = 'Ready';
+
   eventBus.on('scan:complete', function (data) {
-    overlay.setStatus(data.resultCount + ' result(s) — scan #' + data.scanNumber);
+    _lastMeaningfulStatus = data.resultCount + ' result(s) — scan #' + data.scanNumber;
+    overlay.setStatus(_lastMeaningfulStatus);
   });
 
   eventBus.on('scan:reset', function () {
-    overlay.setStatus('Ready');
+    _lastMeaningfulStatus = 'Ready';
+    overlay.setStatus(_lastMeaningfulStatus);
   });
 
   eventBus.on('value:modified', function (data) {
-    overlay.setStatus('Modified: ' + data.path.split('.').pop());
+    _lastMeaningfulStatus = 'Modified: ' + data.path.split('.').pop();
+    overlay.setStatus(_lastMeaningfulStatus);
   });
 
   eventBus.on('value:frozen', function (data) {
-    overlay.setStatus('Frozen: ' + data.path.split('.').pop());
+    _lastMeaningfulStatus = 'Frozen: ' + data.path.split('.').pop();
+    overlay.setStatus(_lastMeaningfulStatus);
   });
 
+  // Debounced network request status — don't flood the status bar
+  var _requestCount = 0;
+  var _requestDebounce = null;
   eventBus.on('request:logged', function () {
-    overlay.setStatus('Request intercepted');
+    _requestCount++;
+    if (!_requestDebounce) {
+      _requestDebounce = setTimeout(function () {
+        // Only show if no more important status is pending
+        if (_requestCount > 0) {
+          overlay.setStatus(_requestCount + ' request(s) intercepted');
+          _requestCount = 0;
+          // Revert to meaningful status after a brief display
+          setTimeout(function () {
+            overlay.setStatus(_lastMeaningfulStatus);
+          }, 2000);
+        }
+        _requestDebounce = null;
+      }, 3000);
+    }
   });
 
   eventBus.on('status:update', function (text) {
+    _lastMeaningfulStatus = text;
     overlay.setStatus(text);
   });
 

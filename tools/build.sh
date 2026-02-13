@@ -60,6 +60,7 @@ cat \
   "$SRC/bypass/freeze-bypass.js" \
   "$SRC/bypass/define-property-bypass.js" \
   "$SRC/bypass/timer-bypass.js" \
+  "$SRC/bypass/keyboard-shield.js" \
   "$SRC/bypass/anti-tamper.js" \
   "$SRC/ui/styles.js" \
   "$SRC/ui/overlay.js" \
